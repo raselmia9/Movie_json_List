@@ -19,9 +19,9 @@ def clean_series_title(title):
     return cleaned.strip()
 
 def extract_logo_and_title(extinf_line):
-    # tvg-logo="..." থেকে লোগো বের করার রেগুলার এক্সপ্রেশন
-    logo_match = re.search(r'tvg-logo="(.*?)"', extinf_line)
-    logo_url = logo_match.group(1) if logo_match else "https://via.placeholder.com/300"
+    # tvg-logo="..." থেকে লোগো বের করার জন্য আরও ফ্লেক্সিবল রেগুলার এক্সপ্রেশন
+    logo_match = re.search(r'tvg-logo=["\'](.*?)["\']', extinf_line, re.IGNORECASE)
+    logo_url = logo_match.group(1) if logo_match and logo_match.group(1).strip() else "https://via.placeholder.com/300"
     
     # টাইটেল বের করা (সাধারণত কমার পরের অংশ)
     parts = extinf_line.split(',')
@@ -64,7 +64,7 @@ def process_m3u_to_json():
                     existing_item["link"] = f"{current_title},,{link}"
                 
                 existing_item["date"] = current_time
-                # যদি আগের লোগো না থাকে বা ডিফল্ট থাকে, তবে নতুন লোগো আপডেট করতে পারে
+                # যদি আগের লোগো না থাকে বা ডিফল্ট থাকে, তবে নতুন লোগো আপডেট করবে
                 if current_logo and "placeholder" in existing_item.get("img", ""):
                     existing_item["img"] = current_logo
             else:
