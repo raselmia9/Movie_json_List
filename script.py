@@ -61,8 +61,18 @@ def process_m3u_to_json():
             tree_key = get_clean_tree_key(current_title)
 
             if tree_key in bag_of_trees:
-                bag_of_trees[tree_key]["links_list"].append((current_title, link))
-                bag_of_trees[tree_key]["date"] = current_time
+                # চেক করা: এই নির্দিষ্ট লিংকটি ইতিমধ্যে এই গাছের ঝুলিতে আছে কি না
+                existing_links_list = bag_of_trees[tree_key]["links_list"]
+                link_exists = False
+                for t, l in existing_links_list:
+                    if l == link:
+                        link_exists = True
+                        break
+                
+                # যদি লিংকটি আগে থেকে না থাকে, তবেই শুধু নতুন 'ফল' বা লিংকটি নেব
+                if not link_exists:
+                    existing_links_list.append((current_title, link))
+                    bag_of_trees[tree_key]["date"] = current_time
             else:
                 clean_display_title = re.split(r'(?i)\b(season|s\d+|ep|episode|part|\d{4})\b', current_title)[0].strip(" -:_[]()")
                 if not clean_display_title:
@@ -106,7 +116,7 @@ def process_m3u_to_json():
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         json.dump(movies_list, f, ensure_ascii=False, indent=4)
     
-    print(f"Successfully processed with 'Default' language! Total items: {len(movies_list)}")
+    print(f"Successfully processed without duplicate links! Total items: {len(movies_list)}")
 
 if __name__ == "__main__":
     process_m3u_to_json()
