@@ -1,6 +1,7 @@
 import json
 import re
 from datetime import datetime
+from difflib import SequenceMatcher
 import requests
 
 M3U_URL = "https://raw.githubusercontent.com/srhady/join_telegram_chennal-livesportsplay/refs/heads/main/latest_movies.m3u"
@@ -14,12 +15,15 @@ def fetch_m3u():
         print(f"Error fetching M3U: {e}")
         return ""
 
-def get_master_tree_key(title):
-    # টাইটেল থেকে সিজন, এপিসোড বা সংখ্যাগুলো খুব সতর্কভাবে আলাদা করে মূল 'গাছ' বা সিরিজের নাম বের করা
-    # যাতে একই সিরিজের বিভিন্ন এপিসোড একই গাছের চাবি (Key) হিসেবে কাজ করে
-    cleaned = re.sub(r'(episodes?|ep|season|s\d+e\d+|\bpart\s*\d+|\b\d+\b)', '', title, flags=re.IGNORECASE)
-    cleaned = re.sub(r'[\(\)\[\]\-:_]', ' ', cleaned) # অতিরিক্ত ব্র্যাকেট বা হাইফেন দূর করা
+def clean_series_title(title):
+    # সিজন, এপিসোড, সাল, রেজোলিউশন (1080p, 720p), পার্ট ইত্যাদি রিমুভ করে শুধু মূল নাম রাখা
+    cleaned = re.sub(r'(episodes?|ep|season|s\d+e\d+|\bpart\s*\d+|\b\d{4}\b|\b1080p\b|\b720p\b|\b4k\b|\bhd\b|\bweb[-]?dl\b|\b\d+\b)', '', title, flags=re.IGNORECASE)
+    cleaned = re.sub(r'[\(\)\[\]\-:_]', ' ', cleaned) # ব্র্যাকেট বা হাইফেন দূর করা
     return ' '.join(cleaned.split()).lower()
+
+def text_similarity(str1, str2):
+    # দুটি টেক্সটের মধ্যে কত পার্সেন্ট মিল আছে তা বের করা (০ থেকে ১ এর মধ্যে ভ্যালু দেয়)
+    return SequenceMatcher(None, str1, str2).ratio()
 
 def extract_info(extinf_line):
     # লোগো বা থামনেল খোঁজা
@@ -45,7 +49,7 @@ def process_m3u_to_json():
         return
 
     lines = content.strip().split('\n')
-    bag_of_trees = {}  # আমাদের 'ব্যাগ' যেখানে গাছ ও তার ফলগুলো জমা থাকবে
+    bag_of_trees = {}  # মাস্টার গাছ ও ফলের ব্যাগ
     current_time = datetime.now().strftime("%m/%d/%Y %I:%M:%S %p")
 
     current_title = ""
@@ -60,15 +64,21 @@ def process_m3u_to_json():
             if not current_title:
                 continue
 
-            # গাছের মূল নাম (Master Tree Key) তৈরি করা
-            tree_key = get_master_tree_key(current_title)
-            if not tree_key:
-                tree_key = current_title.lower()
+            raw_clean_title = clean_series_title(current_title)
+            if not raw_clean_title:
+                raw_clean_title = current_title.lower()
 
-            # ব্যাগ চেক করা: এই গাছ কি ইতিমধ্যে ব্যাগে আছে?
-            if tree_key in bag_of_trees:
-                # গাছ আগে থেকেই আছে, তাই শুধু 'ফল' (লিংক) নিয়ে আগের গাছের সাথে যুক্ত করব
-                existing_item = bag_of_trees[tree_key]
+            # ব্যাগ চেক করা: অন্তত ৩০% (0.3) বা তার বেশি মিল পাওয়া যায় কি না দেখা
+            matched_key = None
+            for existing_key in bag_of_trees.keys():
+                similarity = text_similarity(raw_clean_title, existing_key)
+                if similarity >= 0.3:  # ৩০% বা বেশি মিললেই একই গাছ হিসেবে ধরবে
+                    matched_key = existing_key
+                    break
+
+            if matched_key:
+                # যদি মিলে যায়, তবে শুধু 'ফল' (লিংক) আগের গাছের সাথে যুক্ত করব
+                existing_item = bag_of_trees[matched_key]
                 existing_links = existing_item.get("link", "")
                 
                 if existing_links:
@@ -78,34 +88,37 @@ def process_m3u_to_json():
                 
                 existing_item["date"] = current_time
             else:
-                # গাছ ব্যাগে নেই, তাই সম্পূর্ণ নতুন গাছসহ আইটেমটি ব্যাগে তুলব
+                # না মিললে সম্পূর্ণ নতুন গাছ বা বান্ডিল হিসেবে ব্যাগে তুলব
+                # কিন্তু কার্ডের ডিসপ্লে টাইটেল থেকে অতিরিক্ত অংশ (যেমন S05E111) বাদ দিয়ে শুধু মূল নাম রাখব
+                display_title_parts = re.split(r'(?i)\b(season|s\d+|ep|episode|part|\d{4})\b', current_title)
+                clean_display_title = display_title_parts[0].strip(" -:_[]()")
+                if not clean_display_title:
+                    clean_display_title = current_title
+
                 new_entry = {
-                    "title": current_title,
+                    "title": clean_display_title,  # শুধুমাত্র সিরিজের মূল নাম
                     "details": "Director : N/A\nCast(s) : N/A\nLanguage : English\nQuality : WEB-DL\nResolution : HD",
                     "img": current_logo,
                     "date": current_time,
                     "link": f"{current_title},,{link}"
                 }
-                bag_of_trees[tree_key] = new_entry
+                bag_of_trees[raw_clean_title] = new_entry
 
             # রিসেট
             current_title = ""
             current_logo = "https://via.placeholder.com/300"
 
-    # ব্যাগ থেকে সব গাছগুলোকে লিস্টে রূপান্তর করা
     movies_list = list(bag_of_trees.values())
     
-    # লেটেস্ট আপডেট অনুযায়ী সাজানো
     try:
         movies_list.sort(key=lambda x: datetime.strptime(x.get("date", "01/01/2026 12:00:00 am"), "%m/%d/%Y %I:%M:%S %p"), reverse=True)
     except Exception:
         pass
 
-    # ফাইনাল জেসন ফাইলে সেভ করা
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         json.dump(movies_list, f, ensure_ascii=False, indent=4)
     
-    print(f"Successfully processed! Total unique trees (bundles) in bag: {len(movies_list)}")
+    print(f"Successfully processed with 30%+ similarity! Total bundles: {len(movies_list)}")
 
 if __name__ == "__main__":
     process_m3u_to_json()
