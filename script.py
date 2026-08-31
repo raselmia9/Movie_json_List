@@ -14,10 +14,12 @@ def fetch_m3u():
         print(f"Error fetching M3U: {e}")
         return ""
 
-def clean_series_title(title):
-    # এপিসোড, সিজন বা সংখ্যা বাদ দিয়ে মূল সিরিজের নাম আলাদা করা, যাতে একই সিরিজের সব পর্ব এক জায়গায় আসে
-    cleaned = re.sub(r'(episodes?|ep|season|s\d+e\d+|\d+)', '', title, flags=re.IGNORECASE)
-    return cleaned.strip().lower()
+def get_master_tree_key(title):
+    # টাইটেল থেকে সিজন, এপিসোড বা সংখ্যাগুলো খুব সতর্কভাবে আলাদা করে মূল 'গাছ' বা সিরিজের নাম বের করা
+    # যাতে একই সিরিজের বিভিন্ন এপিসোড একই গাছের চাবি (Key) হিসেবে কাজ করে
+    cleaned = re.sub(r'(episodes?|ep|season|s\d+e\d+|\bpart\s*\d+|\b\d+\b)', '', title, flags=re.IGNORECASE)
+    cleaned = re.sub(r'[\(\)\[\]\-:_]', ' ', cleaned) # অতিরিক্ত ব্র্যাকেট বা হাইফেন দূর করা
+    return ' '.join(cleaned.split()).lower()
 
 def extract_info(extinf_line):
     # লোগো বা থামনেল খোঁজা
@@ -31,7 +33,7 @@ def extract_info(extinf_line):
     if not logo_url or logo_url.strip() == "":
         logo_url = "https://via.placeholder.com/300"
 
-    # টাইটেল বের করা
+    # মূল টাইটেল বের করা
     parts = extinf_line.split(',')
     title = parts[-1].strip() if len(parts) > 1 else "Unknown"
     
@@ -43,13 +45,12 @@ def process_m3u_to_json():
         return
 
     lines = content.strip().split('\n')
-    movies_dict = {}  # সমস্ত আইটেম স্টোর করার জন্য মাস্টার ডিকশনারি
+    bag_of_trees = {}  # আমাদের 'ব্যাগ' যেখানে গাছ ও তার ফলগুলো জমা থাকবে
     current_time = datetime.now().strftime("%m/%d/%Y %I:%M:%S %p")
 
     current_title = ""
     current_logo = "https://via.placeholder.com/300"
     
-    # পুরো ফাইলের এক প্রান্ত থেকে অন্য প্রান্ত পর্যন্ত সব লাইন চেক করার লুপ
     for line in lines:
         line = line.strip()
         if line.startswith('#EXTINF:'):
@@ -59,17 +60,17 @@ def process_m3u_to_json():
             if not current_title:
                 continue
 
-            # মূল নাম বা কি তৈরি করা যার মাধ্যমে মিল পাওয়া যাবে
-            base_key = clean_series_title(current_title)
-            if not base_key:
-                base_key = current_title.lower()
+            # গাছের মূল নাম (Master Tree Key) তৈরি করা
+            tree_key = get_master_tree_key(current_title)
+            if not tree_key:
+                tree_key = current_title.lower()
 
-            # যদি এই সিরিজের বান্ডিল আগে থেকেই তৈরি করা থাকে
-            if base_key in movies_dict:
-                existing_item = movies_dict[base_key]
+            # ব্যাগ চেক করা: এই গাছ কি ইতিমধ্যে ব্যাগে আছে?
+            if tree_key in bag_of_trees:
+                # গাছ আগে থেকেই আছে, তাই শুধু 'ফল' (লিংক) নিয়ে আগের গাছের সাথে যুক্ত করব
+                existing_item = bag_of_trees[tree_key]
                 existing_links = existing_item.get("link", "")
                 
-                # নতুন লিংকটি আগের লিংকের সাথে আপনার নির্দিষ্ট ফরম্যাটে যুক্ত করা
                 if existing_links:
                     existing_item["link"] = f"{current_title},,{link},){existing_links}"
                 else:
@@ -77,7 +78,7 @@ def process_m3u_to_json():
                 
                 existing_item["date"] = current_time
             else:
-                # নতুন সিরিজ বা মুভি পেলে নতুন বান্ডিল বা এন্ট্রি তৈরি করা
+                # গাছ ব্যাগে নেই, তাই সম্পূর্ণ নতুন গাছসহ আইটেমটি ব্যাগে তুলব
                 new_entry = {
                     "title": current_title,
                     "details": "Director : N/A\nCast(s) : N/A\nLanguage : English\nQuality : WEB-DL\nResolution : HD",
@@ -85,26 +86,26 @@ def process_m3u_to_json():
                     "date": current_time,
                     "link": f"{current_title},,{link}"
                 }
-                movies_dict[base_key] = new_entry
+                bag_of_trees[tree_key] = new_entry
 
-            # পরবর্তী আইটেমের জন্য রিসেট করা
+            # রিসেট
             current_title = ""
             current_logo = "https://via.placeholder.com/300"
 
-    # সব আইটেম প্রসেস করার পর সেগুলোকে লিস্টে রূপান্তর করা
-    movies_list = list(movies_dict.values())
+    # ব্যাগ থেকে সব গাছগুলোকে লিস্টে রূপান্তর করা
+    movies_list = list(bag_of_trees.values())
     
-    # লেটেস্ট আপডেটগুলো উপরে রাখার জন্য সর্ট করা
+    # লেটেস্ট আপডেট অনুযায়ী সাজানো
     try:
         movies_list.sort(key=lambda x: datetime.strptime(x.get("date", "01/01/2026 12:00:00 am"), "%m/%d/%Y %I:%M:%S %p"), reverse=True)
     except Exception:
         pass
 
-    # ফাইনাল JSON ফাইলে সেভ করা
+    # ফাইনাল জেসন ফাইলে সেভ করা
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         json.dump(movies_list, f, ensure_ascii=False, indent=4)
     
-    print(f"Successfully processed all items! Total unique bundles: {len(movies_list)}")
+    print(f"Successfully processed! Total unique trees (bundles) in bag: {len(movies_list)}")
 
 if __name__ == "__main__":
     process_m3u_to_json()
