@@ -4,6 +4,7 @@ from datetime import datetime
 import requests
 
 M3U_URL = "https://raw.githubusercontent.com/srhady/join_telegram_chennal-livesportsplay/refs/heads/main/latest_movies.m3u"
+OLD_JSON_URL = "https://raw.githubusercontent.com/raselmia9/SNTT-ALL-DATA/refs/heads/main/Popular%20movie.json"
 OUTPUT_FILE = "Popular movie.json"
 
 def fetch_m3u():
@@ -14,12 +15,14 @@ def fetch_m3u():
         print(f"Error fetching M3U: {e}")
         return ""
 
-def get_clean_tree_key(title):
-    cleaned = re.sub(r'(s\d+e\d+|season\s*\d+|ep\s*\d+|\bpart\s*\d+|\b\d{4}\b|\b1080p\b|\b720p\b|\b4k\b|\bhd\b|\bweb[-]?dl\b)', '', title, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\b[nN]\b$', '', cleaned)
-    cleaned = re.sub(r'[\(\)\[\]\-:_]', ' ', cleaned)
-    key = ' '.join(cleaned.split()).lower()
-    return key if key else title.lower()
+def fetch_old_json():
+    try:
+        res = requests.get(OLD_JSON_URL)
+        if res.status_code == 200:
+            return res.json()
+    except Exception as e:
+        print(f"Error fetching Old JSON: {e}")
+    return []
 
 def extract_info(extinf_line):
     logo_match = re.search(r'tvg-logo="(.*?)"', extinf_line)
@@ -37,86 +40,52 @@ def extract_info(extinf_line):
     
     return title, logo_url
 
-def process_m3u_to_json():
+def convert_m3u_to_json():
+    # ১. পুরোনো জেসন ডেটাগুলো হুবহু নিয়ে আসা
+    old_movies_list = fetch_old_json()
+    if not isinstance(old_movies_list, list):
+        old_movies_list = []
+
+    # ২. নতুন M3U ডেটা ফেচ করা
     content = fetch_m3u()
-    if not content:
-        return
+    new_movies_list = []
+    
+    if content:
+        lines = content.strip().split('\n')
+        current_time = datetime.now().strftime("%m/%d/%Y %I:%M:%S %p")
 
-    lines = content.strip().split('\n')
-    bag_of_trees = {}
-    current_time = datetime.now().strftime("%m/%d/%Y %I:%M:%S %p")
+        current_title = ""
+        current_logo = "https://via.placeholder.com/300"
 
-    current_title = ""
-    current_logo = "https://via.placeholder.com/300"
+        for line in lines:
+            line = line.strip()
+            if line.startswith('#EXTINF:'):
+                current_title, current_logo = extract_info(line)
+            elif line and not line.startswith('#'):
+                link = line
+                if not current_title:
+                    continue
 
-    for line in lines:
-        line = line.strip()
-        if line.startswith('#EXTINF:'):
-            current_title, current_logo = extract_info(line)
-        elif line and not line.startswith('#'):
-            link = line
-            if not current_title:
-                continue
-
-            tree_key = get_clean_tree_key(current_title)
-
-            if tree_key in bag_of_trees:
-                # চেক করা: এই নির্দিষ্ট লিংকটি ইতিমধ্যে এই গাছের ঝুলিতে আছে কি না
-                existing_links_list = bag_of_trees[tree_key]["links_list"]
-                link_exists = False
-                for t, l in existing_links_list:
-                    if l == link:
-                        link_exists = True
-                        break
-                
-                # যদি লিংকটি আগে থেকে না থাকে, তবেই শুধু নতুন 'ফল' বা লিংকটি নেব
-                if not link_exists:
-                    existing_links_list.append((current_title, link))
-                    bag_of_trees[tree_key]["date"] = current_time
-            else:
-                clean_display_title = re.split(r'(?i)\b(season|s\d+|ep|episode|part|\d{4})\b', current_title)[0].strip(" -:_[]()")
-                if not clean_display_title:
-                    clean_display_title = current_title
-
-                bag_of_trees[tree_key] = {
-                    "title": clean_display_title,
+                movie_item = {
+                    "title": current_title,
                     "details": "Director : N/A\nCast(s) : N/A\nLanguage : Default\nQuality : WEB-DL\nResolution : HD",
                     "img": current_logo,
                     "date": current_time,
-                    "links_list": [(current_title, link)]
+                    "link": link
                 }
+                new_movies_list.append(movie_item)
 
-            current_title = ""
-            current_logo = "https://via.placeholder.com/300"
+                current_title = ""
+                current_logo = "https://via.placeholder.com/300"
 
-    movies_list = []
-    for tree_key, item in bag_of_trees.items():
-        links_data = item.pop("links_list")
-        
-        if len(links_data) == 1:
-            item["link"] = links_data[0][1]
-        else:
-            links_data.reverse() 
+    # ৩. পুরোনো ডেটাগুলোকে নতুন ডেটার ঠিক উপরে বা শুরুতে বসিয়ে দেওয়া
+    final_movies_list = old_movies_list + new_movies_list
 
-            formatted_links = ""
-            for i, (t_title, t_link) in enumerate(links_data):
-                if i == 0:
-                    formatted_links = f"{t_title},,{t_link}"
-                else:
-                    formatted_links = f"{t_title},,{t_link},){formatted_links}"
-            item["link"] = formatted_links
-
-        movies_list.append(item)
-
-    try:
-        movies_list.sort(key=lambda x: datetime.strptime(x.get("date", "01/01/2026 12:00:00 am"), "%m/%d/%Y %I:%M:%S %p"), reverse=True)
-    except Exception:
-        pass
-
+    # ৪. ফাইনাল ফাইল সেভ করা
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        json.dump(movies_list, f, ensure_ascii=False, indent=4)
+        json.dump(final_movies_list, f, ensure_ascii=False, indent=4)
     
-    print(f"Successfully processed without duplicate links! Total items: {len(movies_list)}")
+    print(f"Successfully merged! Old items: {len(old_movies_list)}, New items: {len(new_movies_list)}, Total: {len(final_movies_list)}")
 
 if __name__ == "__main__":
-    process_m3u_to_json()
+    convert_m3u_to_json()
