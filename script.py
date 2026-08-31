@@ -1,31 +1,33 @@
 import json
 import re
 from datetime import datetime
-from difflib import SequenceMatcher
 import requests
 
-JSON_URL = "https://raw.githubusercontent.com/raselmia9/SNTT-ALL-DATA/refs/heads/main/Popular%20movie.json"
 M3U_URL = "https://raw.githubusercontent.com/srhady/join_telegram_chennal-livesportsplay/refs/heads/main/latest_movies.m3u"
 OUTPUT_FILE = "Popular movie.json"
 
-def fetch_data():
+def fetch_m3u():
     try:
-        res_json = requests.get(JSON_URL)
-        movies = res_json.json()
-    except Exception:
-        movies = []
+        res = requests.get(M3U_URL)
+        return res.text
+    except Exception as e:
+        print(f"Error fetching M3U: {e}")
+        return ""
 
-    try:
-        res_m3u = requests.get(M3U_URL)
-        m3u_content = res_m3u.text
-    except Exception:
-        m3u_content = ""
+def clean_series_title(title):
+    # এপিসোড বা সিজন নম্বর বাদ দিয়ে মূল নাম বের করা (যেমন: "Bachelor Point S5 Ep 1" থেকে "Bachelor Point")
+    cleaned = re.sub(r'(episodes?|ep|season|s\d+e\d+|\d+)', '', title, flags=re.IGNORECASE)
+    return cleaned.strip()
 
-    return movies, m3u_content
+def process_m3u_to_json():
+    content = fetch_m3u()
+    if not content:
+        return
 
-def parse_m3u(content):
     lines = content.strip().split('\n')
-    parsed_items = []
+    movies_dict = {}
+    current_time = datetime.now().strftime("%m/%d/%Y %I:%M:%S %p")
+
     current_title = ""
     for line in lines:
         line = line.strip()
@@ -33,60 +35,51 @@ def parse_m3u(content):
             parts = line.split(',')
             current_title = parts[-1].strip()
         elif line and not line.startswith('#'):
-            if current_title:
-                parsed_items.append({"title": current_title, "link": line})
-                current_title = ""
-    return parsed_items
+            link = line
+            if not current_title:
+                continue
 
-def clean_title(title):
-    cleaned = re.sub(r'(episodes?|ep|season|s\d+e\d+|\d+)', '', title, flags=re.IGNORECASE)
-    return cleaned.strip().lower()
+            # মূল নাম বের করা গ্রুপ করার জন্য
+            base_key = clean_series_title(current_title)
+            if not base_key:
+                base_key = current_title
 
-def update_movies():
-    movies, m3u_content = fetch_data()
-    m3u_items = parse_m3u(m3u_content)
-
-    current_time = datetime.now().strftime("%m/%d/%Y %I:%M:%S %p")
-
-    for m3u_item in m3u_items:
-        m3u_title = m3u_item["title"]
-        m3u_link = m3u_item["link"]
-        
-        matched_movie = None
-        highest_sim = 0
-        
-        for movie in movies:
-            sim = SequenceMatcher(None, clean_title(m3u_title), clean_title(movie["title"])).ratio()
-            if sim > 0.70 and sim > highest_sim:
-                highest_sim = sim
-                matched_movie = movie
-
-        if matched_movie:
-            existing_links = matched_movie.get("link", "")
-            if existing_links:
-                matched_movie["link"] = f"{m3u_title},,{m3u_link},){existing_links}"
+            # যদি এই সিরিজের নাম আগে থেকেই ডিকশনারিতে থাকে
+            if base_key in movies_dict:
+                existing_item = movies_dict[base_key]
+                existing_links = existing_item.get("link", "")
+                
+                # আপনার নিয়ম অনুযায়ী ডাবল কমা দিয়ে নতুন লিংকটি আগের লিংকের সাথে যুক্ত করা
+                if existing_links:
+                    existing_item["link"] = f"{current_title},,{link},){existing_links}"
+                else:
+                    existing_item["link"] = f"{current_title},,{link}"
+                
+                existing_item["date"] = current_time
             else:
-                matched_movie["link"] = f"{m3u_title},,{m3u_link}"
-            matched_movie["date"] = current_time  # লেটেস্ট ডেটা আপডেট করার জন্য সময় দেওয়া
-        else:
-            new_entry = {
-                "title": m3u_title,
-                "details": "Director : N/A\nCast(s) : N/A\nLanguage : Bengali\nQuality : WEB-DL\nResolution : HD",
-                "img": "https://via.placeholder.com/300",
-                "date": current_time,
-                "link": f"{m3u_title},,{m3u_link}"
-            }
-            movies.insert(0, new_entry)  # নতুন আইটেম সবার উপরে যোগ হবে
+                # নতুন সিরিজ বা মুভি হলে নতুন এন্ট্রি তৈরি করা
+                new_entry = {
+                    "title": current_title,
+                    "details": "Director : N/A\nCast(s) : N/A\nLanguage : Bengali\nQuality : WEB-DL\nResolution : HD",
+                    "img": "https://via.placeholder.com/300",
+                    "date": current_time,
+                    "link": f"{current_title},,{link}"
+                }
+                movies_dict[base_key] = new_entry
 
-    # তারিখ অনুযায়ী সাজানো যাতে লেটেস্টগুলো সবসময় উপরে থাকে
+            current_title = ""
+
+    # ডিকশনারি থেকে লিস্টে রূপান্তর এবং লেটেস্টগুলো উপরে রাখার জন্য সাজানো
+    movies_list = list(movies_dict.values())
     try:
-        movies.sort(key=lambda x: datetime.strptime(x.get("date", "01/01/2026 12:00:00 am"), "%m/%d/%Y %I:%M:%S %p"), reverse=True)
+        movies_list.sort(key=lambda x: datetime.strptime(x.get("date", "01/01/2026 12:00:00 am"), "%m/%d/%Y %I:%M:%S %p"), reverse=True)
     except Exception:
         pass
 
+    # ফাইনাল JSON ফাইলে সেভ করা
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        json.dump(movies, f, ensure_ascii=False, indent=4)
+        json.dump(movies_list, f, ensure_ascii=False, indent=4)
+    print("Successfully generated Popular movie.json")
 
 if __name__ == "__main__":
-    update_movies()
-      
+    process_m3u_to_json()
